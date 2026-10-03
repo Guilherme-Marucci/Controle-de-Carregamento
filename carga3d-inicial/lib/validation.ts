@@ -1,0 +1,9 @@
+import { z } from 'zod';
+const id=z.string().min(1).max(80);const name=z.string().trim().min(1).max(100);const size=z.number().finite().positive().max(2000);
+export const truckSchema=z.object({id,name,length:size,width:size,height:size,doorWidth:size,doorHeight:size,capacity:z.number().finite().positive().max(30000)}).refine(t=>t.doorWidth<=t.width&&t.doorHeight<=t.height,'A abertura não pode ultrapassar o compartimento.');
+export const productSchema=z.object({id,name,category:name,color:z.string().regex(/^#[0-9a-f]{6}$/i),length:size,width:size,baseHeight:size,height:size,weight:z.number().finite().positive().max(30000),rotate:z.boolean(),fragile:z.boolean()}).refine(p=>p.height>=p.baseHeight,'A altura total deve incluir a base.');
+export const distributionRulesSchema=z.object({sameDestination:z.boolean(),lightEnd:z.enum(['cab','door']),fragileClearance:z.number().finite().positive().max(100)});
+const lineSchema=z.object({productId:id,quantity:z.number().int().min(1).max(250),destination:z.string().trim().max(100).optional(),deliveryOrder:z.number().int().min(1).max(100).optional()});
+const placement=z.object({id,productId:id,x:z.number().finite().min(0),z:z.number().finite().min(0),rotated:z.boolean()});
+export const loadSchema=z.object({id,name,createdAt:z.string().datetime(),truck:truckSchema,products:z.array(productSchema).max(100),lines:z.array(lineSchema).max(100),gap:z.number().finite().min(0).max(50),rules:distributionRulesSchema.optional(),plan:z.object({placed:z.array(placement).max(250),unplaced:z.array(z.object({id,productId:id,reason:z.string().max(300)})).max(250)}),adjustments:z.array(z.string().max(500)).max(500)});
+export const workspaceSchema=z.object({trucks:z.array(truckSchema).max(100),products:z.array(productSchema).max(100),loads:z.array(loadSchema).max(100)});
