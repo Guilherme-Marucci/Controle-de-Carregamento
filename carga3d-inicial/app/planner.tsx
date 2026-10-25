@@ -1,65 +1,1466 @@
 'use client';
-import {useState,useEffect,useRef,type FormEvent,type ReactNode} from 'react';
-import {Button} from '@/components/ui/button';
-import {Input} from '@/components/ui/input';
-import {Dialog,DialogContent,DialogTitle,DialogDescription} from '@/components/ui/dialog';
+import { useState, useEffect, useRef, type FormEvent, type ReactNode } from 'react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import Scene from './scene';
 import DistributionControls from './distribution-controls';
-import {initialWorkspace,planCargo,validatePlan,area,totalWeight,DEFAULT_RULES,type DistributionRules,type Workspace,type Truck,type Product,type Line,type Plan,type SavedLoad} from '@/lib/domain';
-import {truckSchema,productSchema} from '@/lib/validation';
-type Tab='planner'|'trucks'|'products'|'loads';
-const empty:Plan={placed:[],unplaced:[]};const fmt=(n:number)=>n.toLocaleString('pt-BR',{maximumFractionDigits:1});
-function Icon({name}:{name:string}){const paths:Record<string,ReactNode>={box:<><path d="m12 3 9 5v9l-9 5-9-5V8z"/><path d="m3 8 9 5 9-5M12 13v9M8 5l9 5"/></>,truck:<><path d="M2 5h12v12H2zM14 10h4l4 4v3h-8"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/></>,plan:<><path d="m12 3 9 5-9 5-9-5zM3 12l9 5 9-5M3 16l9 5 9-5"/></>,save:<><path d="M4 3h13l4 4v14H3V3zM7 3v6h9V3M7 21v-8h10v8"/></>,check:<><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></>,history:<><path d="M3 11a9 9 0 1 1 2 7M3 4v7h7M12 7v6l4 2"/></>};return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" width="19" height="19" aria-hidden="true">{paths[name]??paths.box}</svg>;}
-function Field({label,name,value,type='text',min=1,max,step='any',wide=false}:{label:string;name:string;value?:string|number;type?:string;min?:number;max?:number;step?:string;wide?:boolean}){return <label className={`field ${wide?'wide':''}`}>{label}<Input name={name} type={type} defaultValue={value} required min={type==='number'?min:undefined} max={max} step={type==='number'?step:undefined} maxLength={100}/></label>;}
-export default function Planner(){
- const [tab,setTab]=useState<Tab>('planner'),[data,setData]=useState<Workspace>(initialWorkspace),[revision,setRevision]=useState(0),[ready,setReady]=useState(false),[signed,setSigned]=useState(false),[busy,setBusy]=useState(false);
- const [truckId,setTruckId]=useState(''),[lines,setLines]=useState<Line[]>([]),[gap,setGap]=useState(2),[plan,setPlan]=useState<Plan|null>(null),[selected,setSelected]=useState<string|null>(null),[snapshot,setSnapshot]=useState<SavedLoad|null>(null),[adjustments,setAdjustments]=useState<string[]>([]);
- const [rules,setRules]=useState<DistributionRules>(DEFAULT_RULES);
- const [modal,setModal]=useState<'truck'|'product'|'save'|'adjust'|'delete'|null>(null),[edit,setEdit]=useState<Truck|Product|null>(null),[deleteTarget,setDeleteTarget]=useState<{kind:'trucks'|'products'|'loads';id:string}|null>(null),[formError,setFormError]=useState(''),[message,setMessage]=useState<{text:string;error?:boolean}|null>(null);
- const saving=useRef(false);const truck=snapshot?.truck??data.trucks.find(t=>t.id===truckId);const products=snapshot?.products??data.products;const actualPlan=plan??empty;
- const legacy=!!snapshot&&!snapshot.rules;
- const weight=totalWeight(actualPlan,products),occupied=truck?area(actualPlan,products)/(truck.length*truck.width)*100:0,requested=lines.reduce((s,l)=>s+l.quantity,0);
- async function load(){setReady(false);try{const r=await fetch('/api/workspace');if(r.status===401){setSigned(false);return;}const j=await r.json() as {error?:string;data:Workspace|null;revision:number};if(!r.ok)throw new Error(j.error);setSigned(true);setRevision(j.revision);if(j.data){setData(j.data);setTruckId(j.data.trucks[0]?.id??'');setLines([]);setPlan(null);}}catch(e){setMessage({text:e instanceof Error?e.message:'Falha ao carregar.',error:true});}finally{setReady(true);}}
- useEffect(()=>{void load();},[]);
- async function persist(next:Workspace){if(!signed)throw new Error('Entre para cadastrar produtos, caminhões e salvar cargas.');if(saving.current)throw new Error('Aguarde o salvamento atual.');saving.current=true;setBusy(true);try{const r=await fetch('/api/workspace',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:next,revision})});const j=await r.json() as {error?:string;data:Workspace|null;revision:number};if(!r.ok)throw new Error(j.error);setRevision(j.revision);setData(next);}finally{saving.current=false;setBusy(false);}}
- function invalidate(){setPlan(null);setSelected(null);setAdjustments([]);setSnapshot(null);}
- function generate(){if(!truck)return;try{if(!lines.length)throw new Error('Adicione pelo menos um palete ao pedido.');const p=planCargo(truck,products,lines,gap,rules);setPlan(p);setSnapshot(previous=>previous?{...previous,rules}:null);setSelected(null);setAdjustments([]);setMessage({text:p.unplaced.length?`Planejamento concluído. ${p.unplaced.length} palete(s) não alocado(s).`:'Planejamento concluído. Todos os paletes foram acomodados.'});}catch(e){setMessage({text:(e as Error).message,error:true});}}
- const generateRef=useRef(generate);generateRef.current=generate;const readRef=useRef({plan,truck,rules,lines});readRef.current={plan,truck,rules,lines};
- useEffect(()=>{const context=(document as Document & {modelContext?:{registerTool:(tool:unknown,options:unknown)=>Promise<void>}}).modelContext;if(!context?.registerTool)return;const controller=new AbortController();void Promise.resolve(context.registerTool({name:'read_cargo_plan',description:'Consulta o caminhão e o resultado atualmente visível, sem alterar ou salvar dados.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true},execute:(input:unknown)=>{if(!input||typeof input!=='object'||Object.keys(input).length)throw new Error('Use um objeto vazio.');return readRef.current;}},{signal:controller.signal})).catch(()=>{});return()=>controller.abort();},[]);
- function quantity(id:string,value:number){invalidate();setLines(prev=>{const next=prev.filter(l=>l.productId!==id);if(value>0)next.push({...prev.find(l=>l.productId===id),productId:id,quantity:Math.min(250,Math.floor(value))});return next;});}
- function openModal(kind:typeof modal,item:Truck|Product|null=null){setFormError('');setEdit(item);setModal(kind);}
- async function submit(e:FormEvent<HTMLFormElement>){e.preventDefault();setFormError('');const f=new FormData(e.currentTarget);const str=(key:string)=>String(f.get(key)??'').trim();const num=(key:string)=>Number(f.get(key));try{
-  if(modal==='truck'){const result=truckSchema.safeParse({id:edit?.id??crypto.randomUUID(),name:str('name'),length:num('length'),width:num('width'),height:num('height'),doorWidth:num('doorWidth'),doorHeight:num('doorHeight'),capacity:num('capacity')});if(!result.success)throw new Error(result.error.issues[0].message);const t=result.data;await persist({...data,trucks:edit?data.trucks.map(v=>v.id===t.id?t:v):[...data.trucks,t]});setTruckId(t.id);invalidate();}
-  if(modal==='product'){const result=productSchema.safeParse({id:edit?.id??crypto.randomUUID(),name:str('name'),category:str('category'),color:str('color'),length:num('length'),width:num('width'),height:num('height'),baseHeight:num('baseHeight'),weight:num('weight'),rotate:f.has('rotate'),fragile:f.has('fragile')});if(!result.success)throw new Error(result.error.issues[0].message);const p=result.data;await persist({...data,products:edit?data.products.map(v=>v.id===p.id?p:v):[...data.products,p]});invalidate();}
-  if(modal==='save'){if(legacy)throw new Error('Recalcule esta carga com as regras atuais antes de salvar uma cópia.');if(!truck||!plan)throw new Error('Gere a distribuição antes de salvar.');const errors=validatePlan(truck,products,plan,gap,rules,lines);if(errors.length)throw new Error(errors[0]);const record:SavedLoad={id:crypto.randomUUID(),name:str('name'),createdAt:new Date().toISOString(),truck,products:products.filter(p=>lines.some(l=>l.productId===p.id)),lines,gap,rules,plan,adjustments};await persist({...data,loads:[record,...data.loads]});}
-  if(modal==='adjust'){if(!plan||!truck)throw new Error('Plano indisponível.');const next={...plan,placed:plan.placed.map(a=>a.id===selected?{...a,x:num('x'),z:num('z'),rotated:f.has('rotated')}:a)};const errors=validatePlan(truck,products,next,gap,rules,lines);if(errors.length)throw new Error(errors[0]);setPlan(next);setAdjustments(a=>[...a,`${selected}: x=${num('x')}, z=${num('z')}, rotação=${f.has('rotated')}. Motivo: ${str('reason')}`]);}
-  setModal(null);setMessage({text:modal==='adjust'?'Posição ajustada e verificada.':'Salvo com sucesso.'});
- }catch(e){setFormError((e as Error).message);}}
- async function remove(){if(!deleteTarget)return;try{const {kind,id}=deleteTarget;await persist({...data,[kind]:data[kind].filter(v=>v.id!==id)});if(kind!=='loads'){invalidate();if(kind==='products')setLines(l=>l.filter(v=>v.productId!==id));if(kind==='trucks'&&truckId===id)setTruckId(data.trucks.find(t=>t.id!==id)?.id??'');}setModal(null);}catch(e){setFormError((e as Error).message);}}
- function newLoad(){setSnapshot(null);setPlan(null);setSelected(null);setLines([]);setAdjustments([]);setGap(2);setRules(DEFAULT_RULES);setTab('planner');setTruckId(data.trucks[0]?.id??'');}
- function openLoad(record:SavedLoad){setSnapshot(record);setLines(record.lines);setGap(record.gap);setRules(record.rules??DEFAULT_RULES);setPlan(record.plan);setSelected(null);setAdjustments(record.adjustments);setTab('planner');}
- const current=plan?.placed.find(a=>a.id===selected),currentProduct=products.find(p=>p.id===current?.productId);
- const nav=[['planner','plan','Planejar carga'],['trucks','truck','Caminhões'],['products','box','Produtos e paletes'],['loads','history','Cargas salvas']] as const;
- const titles={planner:'Planejamento de carga',trucks:'Seus caminhões',products:'Produtos e paletes',loads:'Cargas salvas'};
- return <div className="app"><aside className="sidebar"><div className="brand"><Icon name="box"/><span>Carga<b>3D</b></span></div><div className="nav-label">OPERAÇÃO</div><nav>{nav.map(([id,icon,label])=><button key={id} className={tab===id?'active':''} onClick={()=>setTab(id)}><Icon name={icon}/>{label}</button>)}</nav><div className="sidebar-foot"><strong>Planeje antes de carregar.</strong><br/>Caminhões de médio porte<br/><span className="version">Versão inicial</span></div></aside>
- <div className="content"><header className="topbar"><span>Operação <span style={{margin:'0 10px',color:'#bac5ce'}}>/</span> <strong>{titles[tab]}</strong></span><div className="topbar-right"><span><i className="status-dot"/>{!ready?'Carregando…':signed?'Área privada':'Entre para começar'}</span>{!signed&&ready?<a href="/signin-with-chatgpt?return_to=/" target="_top">Entrar para salvar</a>:<span className="avatar">C3</span>}</div></header>
- <main><div className="heading"><div><div className="eyebrow">LOGÍSTICA, EM PERSPECTIVA</div><h1>{titles[tab]}</h1><p>{tab==='planner'?'Organize seus paletes. Visualize cada centímetro.':tab==='trucks'?'Cadastre as medidas úteis e a capacidade disponível.':tab==='products'?'Uma unidade representa um palete já montado com um produto.':'Reabra o planejamento com os dados usados no momento do salvamento.'}</p></div><div className="actions">{tab==='planner'?<><Button variant="outline" onClick={newLoad}>+ Nova carga</Button><Button disabled={!plan||!plan.placed.length||busy||!ready||legacy} onClick={()=>openModal('save')}><Icon name="save"/> Salvar carga</Button></>:tab==='trucks'||tab==='products'?<Button disabled={!ready} onClick={()=>openModal(tab==='trucks'?'truck':'product')}>+ {tab==='trucks'?'Novo caminhão':'Novo produto'}</Button>:<Button onClick={newLoad}>+ Nova carga</Button>}</div></div>
- {message&&<div className={`notice flash ${message.error?'error':''}`} role={message.error?'alert':'status'}><Icon name="check"/><span>{message.text}</span><button aria-label="Fechar mensagem" onClick={()=>setMessage(null)}>×</button></div>}
- {tab==='planner'&&<div className="planner-grid"><section className="panel config"><div className="section-label">01 / CAMINHÃO <button onClick={()=>setTab('trucks')}>Gerenciar</button></div><label className="field">Veículo<select value={snapshot?snapshot.truck.id:truckId} disabled={!!snapshot} onChange={e=>{setTruckId(e.target.value);invalidate();}}>{snapshot?<option value={snapshot.truck.id}>{snapshot.truck.name}</option>:<><option value="" disabled>Selecione um caminhão</option>{data.trucks.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</>}</select></label>{truck&&<div className="truck-spec"><div><span>Comprimento</span>{fmt(truck.length/100)} m</div><div><span>Largura</span>{fmt(truck.width/100)} m</div><div><span>Altura útil</span>{fmt(truck.height/100)} m</div><div><span>Capacidade</span>{fmt(truck.capacity)} kg</div></div>}<div className="divider"/><div className="section-label">02 / PALETES <button onClick={()=>setTab('products')}>Gerenciar</button></div>{products.length?products.map(p=><div className="product-line" key={p.id}><div className="product-title"><i className="swatch" style={{background:p.color}}/>{p.name}</div><small>{fmt(p.length)} × {fmt(p.width)} × {fmt(p.height)} cm · {fmt(p.weight)} kg{p.fragile?' · Frágil':''}</small><div className="quantity"><span>Quantidade</span><div className="stepper"><button aria-label={`Diminuir ${p.name}`} disabled={!!snapshot||!lines.find(l=>l.productId===p.id)?.quantity} onClick={()=>quantity(p.id,(lines.find(l=>l.productId===p.id)?.quantity??0)-1)}>−</button><input aria-label={`Quantidade de ${p.name}`} type="number" min="0" max="250" step="1" disabled={!!snapshot} value={lines.find(l=>l.productId===p.id)?.quantity??0} onChange={e=>quantity(p.id,Math.max(0,Number(e.target.value)))}/><button aria-label={`Aumentar ${p.name}`} disabled={!!snapshot} onClick={()=>quantity(p.id,(lines.find(l=>l.productId===p.id)?.quantity??0)+1)}>+</button></div></div></div>):<p className="modal-help">Cadastre um produto para começar.</p>}<label className="field gap-row">Folga mínima (cm)<Input type="number" min="0" max="50" step="0.5" value={gap} disabled={!!snapshot} onChange={e=>{setGap(Number(e.target.value));invalidate();}}/></label><DistributionControls rules={rules} lines={lines} products={products} disabled={!!snapshot} onRules={next=>{setRules(next);invalidate();}} onLines={next=>{setLines(next);invalidate();}}/><Button className="generate" disabled={!truck||!lines.length||!!snapshot} onClick={generate}><Icon name="plan"/> Gerar distribuição</Button><p className="config-note">{snapshot?'Carga salva aberta. As medidas originais foram preservadas.':'Paletes no piso · sem empilhamento · até 250 unidades'}</p></section>
- <div className="workspace">{legacy&&<div className="notice warn"><span>Plano antigo: separação de frágeis e ordem de entrega ainda não verificadas.</span><Button variant="outline" onClick={generate}>Aplicar regras atuais</Button></div>}<div className="metrics"><div className="metric"><div className="metric-label">Paletes acomodados</div><div className="metric-value">{plan?plan.placed.length:'—'} <span>/ {requested}</span></div><div className="meter"><i style={{width:`${requested?actualPlan.placed.length/requested*100:0}%`}}/></div></div><div className="metric"><div className="metric-label">Ocupação do piso</div><div className="metric-value">{plan?fmt(occupied):'—'} <span>%</span></div><div className="meter"><i style={{width:`${occupied}%`}}/></div></div><div className="metric"><div className="metric-label">Peso da carga</div><div className="metric-value">{plan?fmt(weight):'—'} <span>kg</span></div><div className="meter"><i style={{width:`${truck?weight/truck.capacity*100:0}%`}}/></div></div></div>
- <section className="panel"><div className="panel-head"><div><h2>{snapshot?snapshot.name:'Distribuição no caminhão'}</h2><p>{truck?`${fmt(truck.length)} × ${fmt(truck.width)} × ${fmt(truck.height)} cm de espaço útil`:'Selecione um caminhão para visualizar'}</p></div><span className="tag">{plan?'Vista 3D':'Aguardando cálculo'}</span></div>{truck?<Scene truck={truck} products={products} plan={actualPlan} rules={legacy?undefined:rules} gap={gap} selected={selected} onSelect={setSelected}/>:<div className="empty">Cadastre ou selecione um caminhão.</div>}{!legacy&&<div className="distribution-summary"><strong>{rules.sameDestination?`Destino único · mais leves ${rules.lightEnd==='cab'?'perto da cabine':'perto da porta traseira'}`:'Vários destinos · primeira entrega perto da porta traseira'}</strong><span>Frágeis: separação de {fmt(Math.max(gap,rules.fragileClearance))} cm e amarração obrigatória com cinta.</span></div>}<div className="legend">{products.filter(p=>lines.some(l=>l.productId===p.id)).map(p=><span key={p.id}><i className="swatch" style={{background:p.color}}/>{p.name}</span>)}</div></section>
- {plan?<><div className={`notice ${plan.unplaced.length?'warn':''}`}><Icon name="check"/><span>{plan.unplaced.length?`${plan.unplaced.length} palete(s) não alocado(s). Confira os motivos abaixo.`:`${plan.placed.length} paletes acomodados. Espaço, abertura e peso total verificados.`}</span></div><section className="panel results"><div className="result-head"><h3>{currentProduct?currentProduct.name:'Paletes da carga'}</h3>{current&&!legacy&&<Button variant="outline" onClick={()=>openModal('adjust')}>Ajustar posição</Button>}</div>{current&&currentProduct&&<p className="modal-help" style={{marginBottom:12}}>Palete {plan.placed.indexOf(current)+1} · posição {fmt(current.x)} / {fmt(current.z)} cm · {fmt(currentProduct.weight)} kg{currentProduct.fragile?' · Frágil · amarração obrigatória com cinta':''}{!rules.sameDestination?` · Entrega ${lines.find(l=>l.productId===current.productId)?.deliveryOrder??'—'} · ${lines.find(l=>l.productId===current.productId)?.destination??''}`:''}</p>}<div className="pallet-list">{plan.placed.map((a,i)=><button className={`pallet-chip ${selected===a.id?'selected':''}`} key={a.id} onClick={()=>setSelected(a.id)}><i className="swatch" style={{background:products.find(p=>p.id===a.productId)?.color}}/>{String(i+1).padStart(2,'0')}</button>)}</div>{!legacy&&<div className="delivery-table-wrap"><table className="delivery-table"><thead><tr><th>Produto</th><th>Alocados</th><th>{rules.sameDestination?'Peso / palete':'Entrega / destino'}</th><th>Proteção</th></tr></thead><tbody>{products.filter(p=>lines.some(l=>l.productId===p.id)).map(p=><tr key={p.id}><td>{p.name}</td><td>{plan.placed.filter(a=>a.productId===p.id).length}</td><td>{rules.sameDestination?`${fmt(p.weight)} kg`:`${lines.find(l=>l.productId===p.id)?.deliveryOrder??'—'} · ${lines.find(l=>l.productId===p.id)?.destination??''}`}</td><td>{p.fragile?'Separação + cinta':'Padrão'}</td></tr>)}</tbody></table></div>}{plan.unplaced.map(a=><p className="modal-help" style={{marginTop:8}} key={a.id}>{products.find(p=>p.id===a.productId)?.name}: {a.reason}</p>)}</section></>:<div className="notice info">Escolha as quantidades e clique em Gerar distribuição.</div>}
- <p className="limit-note">Simulação de encaixe e peso total. Não valida peso por eixo, amarração nem manobras de entrada. Confirme os dados do veículo e a execução com o responsável pela operação.</p></div></div>}
- {(tab==='trucks'||tab==='products')&&<div className="catalog-grid">{(tab==='trucks'?data.trucks:data.products).map(item=><section className="panel catalog-card" key={item.id}><div className="card-icon"><Icon name={tab==='trucks'?'truck':'box'}/></div><h3>{item.name}</h3>{'capacity'in item?<><p>{fmt(item.length)} × {fmt(item.width)} × {fmt(item.height)} cm</p><p>Capacidade: {fmt(item.capacity)} kg</p><p>Porta: {fmt(item.doorWidth)} × {fmt(item.doorHeight)} cm</p></>:<><p><i className="swatch" style={{background:item.color}}/> {item.category}{item.fragile?' · Frágil':''}</p><p>Palete: {fmt(item.length)} × {fmt(item.width)} cm</p><p>Base: {fmt(item.baseHeight)} cm · Total: {fmt(item.height)} cm</p><p>{fmt(item.weight)} kg com palete · {item.rotate?'Giro permitido':'Sem giro'}</p></>}<footer><Button variant="outline" onClick={()=>openModal(tab==='trucks'?'truck':'product',item)}>Editar cadastro</Button><Button variant="ghost" onClick={()=>{setDeleteTarget({kind:tab,id:item.id});openModal('delete');}}>Excluir</Button></footer></section>)}{!(tab==='trucks'?data.trucks:data.products).length&&<div className="panel empty"><h3>Nenhum cadastro ainda</h3><p>Use o botão acima para adicionar o primeiro.</p></div>}</div>}
- {tab==='loads'&&<div className="load-list">{data.loads.map(record=><section className="panel load-card" key={record.id}><Icon name="truck"/><div className="load-summary"><h3>{record.name}</h3><p>{record.truck.name} · {record.plan.placed.length} paletes · {fmt(totalWeight(record.plan,record.products))} kg</p><p>{new Date(record.createdAt).toLocaleString('pt-BR')} · {record.adjustments.length} ajuste(s)</p></div><Button variant="outline" onClick={()=>openLoad(record)}>Abrir em 3D</Button><Button variant="ghost" onClick={()=>{setDeleteTarget({kind:'loads',id:record.id});openModal('delete');}}>Excluir</Button></section>)}{!data.loads.length&&<div className="panel empty"><h3>Seu próximo carregamento começa aqui.</h3><p>Gere uma distribuição e salve para consultar depois.</p><Button style={{marginTop:20}} onClick={newLoad}>Planejar carga</Button></div>}</div>}
- </main></div>
- <Dialog open={modal!==null} onOpenChange={v=>{if(!v&&!busy)setModal(null);}}><DialogContent className="max-h-[90vh] overflow-y-auto"><DialogTitle>{modal==='truck'?`${edit?'Editar':'Novo'} caminhão`:modal==='product'?`${edit?'Editar':'Novo'} produto e palete`:modal==='save'?'Salvar planejamento':modal==='adjust'?'Ajustar posição do palete':'Excluir registro?'}</DialogTitle><DialogDescription>{modal==='truck'?'Use as medidas internas disponíveis para a carga.':modal==='product'?'Informe as medidas da unidade carregada. Peso e altura total incluem o palete.':modal==='adjust'?'X: distância da frente. Z: distância da lateral. A posição será verificada antes de aplicar.':modal==='save'?'O plano será salvo junto com as medidas originais e o histórico de ajustes.':'Cargas já salvas preservam seus dados. A exclusão deste registro é permanente.'}</DialogDescription>
- {modal==='delete'?<><p className="modal-error" role="alert">{formError}</p><div className="modal-actions"><Button variant="outline" onClick={()=>setModal(null)}>Cancelar</Button><Button variant="destructive" disabled={busy} onClick={remove}>Excluir</Button></div></>:<form className="modal-form" onSubmit={submit} key={`${modal}-${edit?.id??selected??'new'}`}>
- {modal==='truck'&&<div className="form-grid"><Field wide label="Nome do caminhão" name="name" value={edit?.name}/>{[['length','Comprimento útil (cm)'],['width','Largura útil (cm)'],['height','Altura útil (cm)'],['capacity','Capacidade disponível (kg)'],['doorWidth','Largura da porta (cm)'],['doorHeight','Altura da porta (cm)']].map(([key,label])=><Field key={key} name={key} label={label} type="number" value={edit&&key in edit?Number(edit[key as keyof typeof edit]):undefined}/>)}<p className="modal-help wide">Cadastre somente os caminhões médios da sua operação. A capacidade depende do veículo e da carroceria.</p></div>}
- {modal==='product'&&<div className="form-grid"><Field wide label="Nome do produto" name="name" value={edit?.name}/><Field label="Tipo / categoria" name="category" value={edit&&'category'in edit?edit.category:undefined}/><label className="field">Cor no 3D<Input type="color" name="color" defaultValue={edit&&'color'in edit?edit.color:'#e78c45'}/></label>{[['length','Comprimento do palete (cm)'],['width','Largura do palete (cm)'],['baseHeight','Altura da base (cm)'],['height','Altura total carregada (cm)'],['weight','Peso total com palete (kg)']].map(([key,label])=><Field key={key} name={key} label={label} type="number" value={edit&&key in edit?Number(edit[key as keyof typeof edit]):undefined}/>)}<label className="check wide"><input type="checkbox" name="rotate" defaultChecked={edit&&'rotate'in edit?edit.rotate:true}/> Permitir giro de 90° no piso</label><label className="check wide"><input type="checkbox" name="fragile" defaultChecked={edit&&'fragile'in edit?edit.fragile:false}/> Produto frágil</label></div>}
- {modal==='save'&&<Field name="name" label="Nome da carga" value={snapshot?`${snapshot.name} · cópia`:`Carga ${data.loads.length+1}`}/>}
- {modal==='adjust'&&current&&<div className="form-grid"><Field name="x" label="Posição X (cm)" type="number" min={0} value={current.x}/><Field name="z" label="Posição Z (cm)" type="number" min={0} value={current.z}/><label className="check wide"><input name="rotated" type="checkbox" defaultChecked={current.rotated} disabled={!currentProduct?.rotate}/> Girar 90°</label><Field wide name="reason" label="Motivo do ajuste"/></div>}
- {formError&&<p role="alert" className="modal-error">{formError}</p>}{!signed&&modal!=='adjust'&&<p className="modal-help"><a href="/signin-with-chatgpt?return_to=/" target="_top">Entre na sua conta</a> para salvar no banco de dados.</p>}<div className="modal-actions"><Button type="button" variant="outline" disabled={busy} onClick={()=>setModal(null)}>Cancelar</Button><Button type="submit" disabled={busy||!ready}>{busy?'Salvando…':modal==='adjust'?'Verificar e aplicar':'Salvar'}</Button></div></form>}
- </DialogContent></Dialog></div>;
+import LoginModal from './components/LoginModal';
+import ManifestView from './components/ManifestView';
+import AxleWeightSimulator from './components/AxleWeightSimulator';
+import DashboardView from './components/DashboardView';
+import PresetsModal from './components/PresetsModal';
+import BackupModal from './components/BackupModal';
+import {
+  initialWorkspace,
+  planCargo,
+  validatePlan,
+  area,
+  totalWeight,
+  DEFAULT_RULES,
+  PRESET_TRUCKS,
+  PRESET_PRODUCTS,
+  type DistributionRules,
+  type Workspace,
+  type Truck,
+  type Product,
+  type Line,
+  type Plan,
+  type SavedLoad
+} from '@/lib/domain';
+import { truckSchema, productSchema } from '@/lib/validation';
+import { type ChatGPTUser } from './chatgpt-auth';
+
+type Tab = 'planner' | 'manifest' | 'axles' | 'dashboard' | 'trucks' | 'products' | 'loads';
+const empty: Plan = { placed: [], unplaced: [] };
+const fmt = (n: number) => n.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+
+function Icon({ name }: { name: string }) {
+  const paths: Record<string, ReactNode> = {
+    box: (
+      <>
+        <path d="m12 3 9 5v9l-9 5-9-5V8z" />
+        <path d="m3 8 9 5 9-5M12 13v9M8 5l9 5" />
+      </>
+    ),
+    truck: (
+      <>
+        <path d="M2 5h12v12H2zM14 10h4l4 4v3h-8" />
+        <circle cx="6" cy="18" r="2" />
+        <circle cx="18" cy="18" r="2" />
+      </>
+    ),
+    plan: (
+      <>
+        <path d="m12 3 9 5-9 5-9-5zM3 12l9 5 9-5M3 16l9 5 9-5" />
+      </>
+    ),
+    save: (
+      <>
+        <path d="M4 3h13l4 4v14H3V3zM7 3v6h9V3M7 21v-8h10v8" />
+      </>
+    ),
+    check: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="m8 12 3 3 5-6" />
+      </>
+    ),
+    history: (
+      <>
+        <path d="M3 11a9 9 0 1 1 2 7M3 4v7h7M12 7v6l4 2" />
+      </>
+    ),
+    manifest: (
+      <>
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <polyline points="14 2 14 8 20 8" />
+        <line x1="16" y1="13" x2="8" y2="13" />
+        <line x1="16" y1="17" x2="8" y2="17" />
+        <polyline points="10 9 9 9 8 9" />
+      </>
+    ),
+    axles: (
+      <>
+        <circle cx="12" cy="12" r="10" />
+        <path d="M16 12h-4V8" />
+        <path d="M12 16v-4" />
+      </>
+    ),
+    dashboard: (
+      <>
+        <rect width="7" height="9" x="3" y="3" rx="1" />
+        <rect width="7" height="5" x="14" y="3" rx="1" />
+        <rect width="7" height="9" x="14" y="12" rx="1" />
+        <rect width="7" height="5" x="3" y="16" rx="1" />
+      </>
+    ),
+    database: (
+      <>
+        <ellipse cx="12" cy="5" rx="9" ry="3" />
+        <path d="M3 5V19A9 3 0 0 0 21 19V5" />
+        <path d="M3 12A9 3 0 0 0 21 12" />
+      </>
+    ),
+    sparkles: (
+      <>
+        <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z" />
+      </>
+    )
+  };
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      width="19"
+      height="19"
+      aria-hidden="true"
+    >
+      {paths[name] ?? paths.box}
+    </svg>
+  );
 }
 
+function Field({
+  label,
+  name,
+  value,
+  type = 'text',
+  min = 1,
+  max,
+  step = 'any',
+  wide = false
+}: {
+  label: string;
+  name: string;
+  value?: string | number;
+  type?: string;
+  min?: number;
+  max?: number;
+  step?: string;
+  wide?: boolean;
+}) {
+  return (
+    <label className={`field ${wide ? 'wide' : ''}`}>
+      {label}
+      <Input
+        name={name}
+        type={type}
+        defaultValue={value}
+        required
+        min={type === 'number' ? min : undefined}
+        max={max}
+        step={type === 'number' ? step : undefined}
+        maxLength={100}
+      />
+    </label>
+  );
+}
+
+export default function Planner() {
+  const [tab, setTab] = useState<Tab>('planner');
+  const [data, setData] = useState<Workspace>(initialWorkspace);
+  const [revision, setRevision] = useState(0);
+  const [ready, setReady] = useState(false);
+  const [currentUser, setCurrentUser] = useState<ChatGPTUser | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const [truckId, setTruckId] = useState('');
+  const [lines, setLines] = useState<Line[]>([]);
+  const [gap, setGap] = useState(2);
+  const [plan, setPlan] = useState<Plan | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<SavedLoad | null>(null);
+  const [adjustments, setAdjustments] = useState<string[]>([]);
+  const [rules, setRules] = useState<DistributionRules>(DEFAULT_RULES);
+
+  const [modal, setModal] = useState<'truck' | 'product' | 'save' | 'adjust' | 'delete' | null>(null);
+  const [edit, setEdit] = useState<Truck | Product | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ kind: 'trucks' | 'products' | 'loads'; id: string } | null>(null);
+  const [formError, setFormError] = useState('');
+  const [message, setMessage] = useState<{ text: string; error?: boolean } | null>(null);
+
+  // Modais de extensões
+  const [loginModalOpen, setLoginModalOpen] = useState(false);
+  const [presetsModalOpen, setPresetsModalOpen] = useState(false);
+  const [backupModalOpen, setBackupModalOpen] = useState(false);
+
+  const saving = useRef(false);
+  const truck = snapshot?.truck ?? data.trucks.find((t) => t.id === truckId);
+  const products = snapshot?.products ?? data.products;
+  const actualPlan = plan ?? empty;
+  const legacy = !!snapshot && !snapshot.rules;
+  const weight = totalWeight(actualPlan, products);
+  const occupied = truck ? (area(actualPlan, products) / (truck.length * truck.width)) * 100 : 0;
+  const requested = lines.reduce((s, l) => s + l.quantity, 0);
+
+  // Carrega autenticação e workspace
+  async function load() {
+    setReady(false);
+    try {
+      // 1. Inspeciona sessão do usuário
+      const authRes = await fetch('/api/auth');
+      const authData = await authRes.json();
+      if (authData.authenticated && authData.user) {
+        setCurrentUser(authData.user);
+      } else {
+        setCurrentUser(null);
+      }
+
+      // 2. Inspeciona dados do workspace
+      const r = await fetch('/api/workspace');
+      if (r.status === 401) {
+        // Modo visitante / não logado
+        return;
+      }
+      const j = (await r.json()) as { error?: string; data: Workspace | null; revision: number };
+      if (!r.ok) throw new Error(j.error);
+      setRevision(j.revision);
+      if (j.data) {
+        setData(j.data);
+        if (!truckId && j.data.trucks.length) {
+          setTruckId(j.data.trucks[0].id);
+        }
+      }
+    } catch (e) {
+      setMessage({ text: e instanceof Error ? e.message : 'Falha ao sincronizar ambiente.', error: true });
+    } finally {
+      setReady(true);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function persist(next: Workspace) {
+    if (!currentUser) {
+      setLoginModalOpen(true);
+      throw new Error('Identifique-se para salvar seus cadastros no servidor local.');
+    }
+    if (saving.current) throw new Error('Aguarde o salvamento atual.');
+    saving.current = true;
+    setBusy(true);
+    try {
+      const r = await fetch('/api/workspace', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: next, revision })
+      });
+      const j = (await r.json()) as { error?: string; data: Workspace | null; revision: number };
+      if (!r.ok) throw new Error(j.error);
+      setRevision(j.revision);
+      setData(next);
+    } finally {
+      saving.current = false;
+      setBusy(false);
+    }
+  }
+
+  function invalidate() {
+    setPlan(null);
+    setSelected(null);
+    setAdjustments([]);
+    setSnapshot(null);
+  }
+
+  function generate() {
+    if (!truck) return;
+    try {
+      if (!lines.length) throw new Error('Adicione pelo menos um palete ao pedido.');
+      const p = planCargo(truck, products, lines, gap, rules);
+      setPlan(p);
+      setSnapshot((previous) => (previous ? { ...previous, rules } : null));
+      setSelected(null);
+      setAdjustments([]);
+      setMessage({
+        text: p.unplaced.length
+          ? `Planejamento concluído. ${p.unplaced.length} palete(s) não alocado(s).`
+          : 'Planejamento concluído. Todos os paletes foram acomodados com sucesso.'
+      });
+    } catch (e) {
+      setMessage({ text: (e as Error).message, error: true });
+    }
+  }
+
+  const generateRef = useRef(generate);
+  generateRef.current = generate;
+  const readRef = useRef({ plan, truck, rules, lines });
+  readRef.current = { plan, truck, rules, lines };
+
+  // Contexto para ferramentas automáticas
+  useEffect(() => {
+    const context = (
+      document as Document & {
+        modelContext?: { registerTool: (tool: unknown, options: unknown) => Promise<void> };
+      }
+    ).modelContext;
+    if (!context?.registerTool) return;
+    const controller = new AbortController();
+    void Promise.resolve(
+      context.registerTool(
+        {
+          name: 'read_cargo_plan',
+          description: 'Consulta o caminhão e o resultado atualmente visível, sem alterar ou salvar dados.',
+          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+          annotations: { readOnlyHint: true },
+          execute: (input: unknown) => {
+            if (!input || typeof input !== 'object' || Object.keys(input).length) {
+              throw new Error('Use um objeto vazio.');
+            }
+            return readRef.current;
+          }
+        },
+        { signal: controller.signal }
+      )
+    ).catch(() => {});
+    return () => controller.abort();
+  }, []);
+
+  function quantity(id: string, value: number) {
+    invalidate();
+    setLines((prev) => {
+      const next = prev.filter((l) => l.productId !== id);
+      if (value > 0) {
+        next.push({
+          ...prev.find((l) => l.productId === id),
+          productId: id,
+          quantity: Math.min(250, Math.floor(value))
+        });
+      }
+      return next;
+    });
+  }
+
+  function openModal(kind: typeof modal, item: Truck | Product | null = null) {
+    setFormError('');
+    setEdit(item);
+    setModal(kind);
+  }
+
+  async function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setFormError('');
+    const f = new FormData(e.currentTarget);
+    const str = (key: string) => String(f.get(key) ?? '').trim();
+    const num = (key: string) => Number(f.get(key));
+    try {
+      if (modal === 'truck') {
+        const result = truckSchema.safeParse({
+          id: edit?.id ?? crypto.randomUUID(),
+          name: str('name'),
+          length: num('length'),
+          width: num('width'),
+          height: num('height'),
+          doorWidth: num('doorWidth'),
+          doorHeight: num('doorHeight'),
+          capacity: num('capacity')
+        });
+        if (!result.success) throw new Error(result.error.issues[0].message);
+        const t = result.data;
+        await persist({
+          ...data,
+          trucks: edit ? data.trucks.map((v) => (v.id === t.id ? t : v)) : [...data.trucks, t]
+        });
+        setTruckId(t.id);
+        invalidate();
+      }
+      if (modal === 'product') {
+        const result = productSchema.safeParse({
+          id: edit?.id ?? crypto.randomUUID(),
+          name: str('name'),
+          category: str('category'),
+          color: str('color'),
+          length: num('length'),
+          width: num('width'),
+          height: num('height'),
+          baseHeight: num('baseHeight'),
+          weight: num('weight'),
+          rotate: f.has('rotate'),
+          fragile: f.has('fragile')
+        });
+        if (!result.success) throw new Error(result.error.issues[0].message);
+        const p = result.data;
+        await persist({
+          ...data,
+          products: edit ? data.products.map((v) => (v.id === p.id ? p : v)) : [...data.products, p]
+        });
+        invalidate();
+      }
+      if (modal === 'save') {
+        if (legacy) throw new Error('Recalcule esta carga com as regras atuais antes de salvar uma cópia.');
+        if (!truck || !plan) throw new Error('Gere a distribuição antes de salvar.');
+        const errors = validatePlan(truck, products, plan, gap, rules, lines);
+        if (errors.length) throw new Error(errors[0]);
+        const record: SavedLoad = {
+          id: crypto.randomUUID(),
+          name: str('name'),
+          createdAt: new Date().toISOString(),
+          truck,
+          products: products.filter((p) => lines.some((l) => l.productId === p.id)),
+          lines,
+          gap,
+          rules,
+          plan,
+          adjustments
+        };
+        await persist({ ...data, loads: [record, ...data.loads] });
+      }
+      if (modal === 'adjust') {
+        if (!plan || !truck) throw new Error('Plano indisponível.');
+        const next = {
+          ...plan,
+          placed: plan.placed.map((a) =>
+            a.id === selected ? { ...a, x: num('x'), z: num('z'), rotated: f.has('rotated') } : a
+          )
+        };
+        const errors = validatePlan(truck, products, next, gap, rules, lines);
+        if (errors.length) throw new Error(errors[0]);
+        setPlan(next);
+        setAdjustments((a) => [
+          ...a,
+          `${selected}: x=${num('x')}, z=${num('z')}, rotação=${f.has('rotated')}. Motivo: ${str('reason')}`
+        ]);
+      }
+      setModal(null);
+      setMessage({ text: modal === 'adjust' ? 'Posição ajustada e verificada.' : 'Salvo com sucesso.' });
+    } catch (e) {
+      setFormError((e as Error).message);
+    }
+  }
+
+  async function remove() {
+    if (!deleteTarget) return;
+    try {
+      const { kind, id } = deleteTarget;
+      await persist({ ...data, [kind]: data[kind].filter((v) => v.id !== id) });
+      if (kind !== 'loads') {
+        invalidate();
+        if (kind === 'products') setLines((l) => l.filter((v) => v.productId !== id));
+        if (kind === 'trucks' && truckId === id) {
+          setTruckId(data.trucks.find((t) => t.id !== id)?.id ?? '');
+        }
+      }
+      setModal(null);
+    } catch (e) {
+      setFormError((e as Error).message);
+    }
+  }
+
+  function newLoad() {
+    setSnapshot(null);
+    setPlan(null);
+    setSelected(null);
+    setLines([]);
+    setAdjustments([]);
+    setGap(2);
+    setRules(DEFAULT_RULES);
+    setTab('planner');
+    setTruckId(data.trucks[0]?.id ?? '');
+  }
+
+  function openLoad(record: SavedLoad) {
+    setSnapshot(record);
+    setLines(record.lines);
+    setGap(record.gap);
+    setRules(record.rules ?? DEFAULT_RULES);
+    setPlan(record.plan);
+    setSelected(null);
+    setAdjustments(record.adjustments);
+    setTab('planner');
+  }
+
+  // Ações de predefinições em 1 clique
+  async function handleImportTrucks(trucksToAdd: Truck[]) {
+    const existingIds = new Set(data.trucks.map((t) => t.id));
+    const newTrucks = trucksToAdd.filter((t) => !existingIds.has(t.id));
+    if (!newTrucks.length) {
+      setMessage({ text: 'Os caminhões selecionados já estão cadastrados.' });
+      return;
+    }
+    const updated = { ...data, trucks: [...data.trucks, ...newTrucks] };
+    if (!truckId) setTruckId(newTrucks[0].id);
+    await persist(updated);
+    setMessage({ text: `${newTrucks.length} caminhão(ões) padrão adicionado(s).` });
+  }
+
+  async function handleImportProducts(productsToAdd: Product[]) {
+    const existingIds = new Set(data.products.map((p) => p.id));
+    const newProducts = productsToAdd.filter((p) => !existingIds.has(p.id));
+    if (!newProducts.length) {
+      setMessage({ text: 'Os paletes selecionados já estão cadastrados.' });
+      return;
+    }
+    const updated = { ...data, products: [...data.products, ...newProducts] };
+    await persist(updated);
+    setMessage({ text: `${newProducts.length} tipo(s) de palete padrão adicionado(s).` });
+  }
+
+  async function handleImportDemoScenario() {
+    const demoTruck = PRESET_TRUCKS[1]; // Toco
+    const demoProds = PRESET_PRODUCTS;
+    const demoLines: Line[] = [
+      { productId: demoProds[0].id, quantity: 4 }, // PBR Industrial
+      { productId: demoProds[1].id, quantity: 3 }, // Bebidas
+      { productId: demoProds[3].id, quantity: 2 }  // Frágil Vidros
+    ];
+
+    const updated = {
+      ...data,
+      trucks: data.trucks.some((t) => t.id === demoTruck.id) ? data.trucks : [...data.trucks, demoTruck],
+      products: [...data.products, ...demoProds.filter((p) => !data.products.some((dp) => dp.id === p.id))]
+    };
+
+    if (currentUser) {
+      await persist(updated);
+    } else {
+      setData(updated);
+    }
+
+    setTruckId(demoTruck.id);
+    setLines(demoLines);
+    setRules(DEFAULT_RULES);
+    setGap(2);
+    setTab('planner');
+
+    try {
+      const generatedPlan = planCargo(demoTruck, demoProds, demoLines, 2, DEFAULT_RULES);
+      setPlan(generatedPlan);
+      setMessage({ text: 'Demonstração completa carregada e calculada em 3D!' });
+    } catch (e) {
+      setMessage({ text: (e as Error).message, error: true });
+    }
+  }
+
+  const current = plan?.placed.find((a) => a.id === selected);
+  const currentProduct = products.find((p) => p.id === current?.productId);
+
+  const nav = [
+    ['planner', 'plan', 'Planejar carga'],
+    ['manifest', 'manifest', 'Romaneio & Expedição'],
+    ['axles', 'axles', 'Balança & Eixos'],
+    ['dashboard', 'dashboard', 'Indicadores'],
+    ['trucks', 'truck', 'Caminhões'],
+    ['products', 'box', 'Produtos e paletes'],
+    ['loads', 'history', 'Cargas salvas']
+  ] as const;
+
+  const titles: Record<Tab, string> = {
+    planner: 'Planejamento de carga',
+    manifest: 'Romaneio de Expedição',
+    axles: 'Balança & Distribuição por Eixo',
+    dashboard: 'Painel de Indicadores Logísticos',
+    trucks: 'Seus caminhões',
+    products: 'Produtos e paletes',
+    loads: 'Cargas salvas'
+  };
+
+  return (
+    <div className="app">
+      {/* Barra Lateral de Navegação */}
+      <aside className="sidebar">
+        <div className="brand">
+          <Icon name="box" />
+          <span>
+            Carga<b>3D</b>
+          </span>
+        </div>
+        <div className="nav-label">OPERAÇÃO & LOGÍSTICA</div>
+        <nav>
+          {nav.map(([id, icon, label]) => (
+            <button
+              key={id}
+              className={tab === id ? 'active' : ''}
+              onClick={() => setTab(id)}
+            >
+              <Icon name={icon} />
+              {label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="sidebar-foot">
+          <strong>Planeje antes de carregar.</strong>
+          <br />
+          Servidor Local · Otimização 3D
+          <br />
+          <span className="version">Versão 2.0 Estendida</span>
+        </div>
+      </aside>
+
+      {/* Conteúdo Principal */}
+      <div className="content">
+        {/* Barra Superior com Perfil e Ações Rápidas */}
+        <header className="topbar">
+          <div className="flex items-center gap-2">
+            <span>
+              Operação <span style={{ margin: '0 8px', color: '#bac5ce' }}>/</span>{' '}
+              <strong>{titles[tab]}</strong>
+            </span>
+          </div>
+
+          <div className="topbar-right">
+            {/* Botão de Predefinições Rápidas */}
+            <button
+              onClick={() => setPresetsModalOpen(true)}
+              className="quick-action-pill"
+              title="Carregar caminhões e paletes padrão ABNT"
+            >
+              <Icon name="sparkles" />
+              <span>Predefinições BR</span>
+            </button>
+
+            {/* Botão de Backup */}
+            <button
+              onClick={() => setBackupModalOpen(true)}
+              className="quick-action-pill"
+              title="Exportar ou restaurar backup em JSON"
+            >
+              <Icon name="database" />
+              <span>Backup</span>
+            </button>
+
+            {/* Badge de Usuário / Login */}
+            {currentUser ? (
+              <button
+                onClick={() => setLoginModalOpen(true)}
+                className="user-badge-btn"
+                title="Gerenciar perfil ou alternar operador"
+              >
+                <i className="status-dot" />
+                <span className="font-semibold text-xs">{currentUser.displayName}</span>
+                <span className="text-[11px] text-slate-500 hidden sm:inline">
+                  ({currentUser.role || 'Operador'})
+                </span>
+                <span className="avatar">
+                  {currentUser.displayName.slice(0, 2).toUpperCase()}
+                </span>
+              </button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setLoginModalOpen(true)}
+                className="text-xs h-8 border-orange-300 text-orange-800 hover:bg-orange-50"
+              >
+                <i className="status-dot" style={{ background: '#f59e0b' }} />
+                Entrar no Sistema Local
+              </Button>
+            )}
+          </div>
+        </header>
+
+        <main>
+          {/* Cabeçalho da Página */}
+          <div className="heading">
+            <div>
+              <div className="eyebrow">LOGÍSTICA & ENGENHARIA DE CARGA</div>
+              <h1>{titles[tab]}</h1>
+              <p>
+                {tab === 'planner'
+                  ? 'Organize seus paletes no caminhão. Simule folgas, peso e amarração de frágeis.'
+                  : tab === 'manifest'
+                  ? 'Gere o romaneio de expedição e a ordem física de carregamento e descarregamento.'
+                  : tab === 'axles'
+                  ? 'Monitore a balança por eixo e a estabilidade física do veículo.'
+                  : tab === 'dashboard'
+                  ? 'Métricas globais da frota, ocupação de baú e eficiência volumétrica.'
+                  : tab === 'trucks'
+                  ? 'Cadastre medidas úteis internas e capacidade da frota rodoviária.'
+                  : tab === 'products'
+                  ? 'Cadastre dimensões de paletes montados, peso e regras de fragilidade.'
+                  : 'Reabra e consulte carregamentos salvos no banco de dados local.'}
+              </p>
+            </div>
+
+            <div className="actions">
+              {tab === 'planner' ? (
+                <>
+                  <Button variant="outline" onClick={newLoad}>
+                    + Nova carga
+                  </Button>
+                  <Button
+                    disabled={!plan || !plan.placed.length || busy || !ready || legacy}
+                    onClick={() => openModal('save')}
+                  >
+                    <Icon name="save" /> Salvar carga
+                  </Button>
+                </>
+              ) : tab === 'trucks' || tab === 'products' ? (
+                <Button disabled={!ready} onClick={() => openModal(tab === 'trucks' ? 'truck' : 'product')}>
+                  + {tab === 'trucks' ? 'Novo caminhão' : 'Novo produto'}
+                </Button>
+              ) : (
+                <Button onClick={newLoad}>+ Nova carga</Button>
+              )}
+            </div>
+          </div>
+
+          {/* Mensagens de Notificação */}
+          {message && (
+            <div
+              className={`notice flash ${message.error ? 'error' : ''}`}
+              role={message.error ? 'alert' : 'status'}
+            >
+              <Icon name="check" />
+              <span>{message.text}</span>
+              <button aria-label="Fechar mensagem" onClick={() => setMessage(null)}>
+                ×
+              </button>
+            </div>
+          )}
+
+          {/* Banner de Boas-Vindas quando não há caminhões */}
+          {data.trucks.length === 0 && ready && (
+            <div className="mb-6 p-4 bg-orange-50/80 border border-orange-200 rounded-xl flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <strong className="text-orange-900 text-sm block">
+                  Ambiente inicial pronto para uso!
+                </strong>
+                <span className="text-xs text-orange-800">
+                  Deseja carregar a frota padrão brasileira (VUC 3/4, Toco, Truck) e paletes PBR com 1 clique?
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setPresetsModalOpen(true)}
+                  className="text-xs bg-white"
+                >
+                  Ver Predefinições
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleImportDemoScenario}
+                  className="text-xs bg-[#dc672d] hover:bg-[#c95922] text-white"
+                >
+                  Iniciar Demonstração 3D
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* ABA 1: PLANEJADOR 3D */}
+          {tab === 'planner' && (
+            <div className="planner-grid">
+              <section className="panel config">
+                <div className="section-label">
+                  01 / CAMINHÃO <button onClick={() => setTab('trucks')}>Gerenciar</button>
+                </div>
+                <label className="field">
+                  Veículo
+                  <select
+                    value={snapshot ? snapshot.truck.id : truckId}
+                    disabled={!!snapshot}
+                    onChange={(e) => {
+                      setTruckId(e.target.value);
+                      invalidate();
+                    }}
+                  >
+                    {snapshot ? (
+                      <option value={snapshot.truck.id}>{snapshot.truck.name}</option>
+                    ) : (
+                      <>
+                        <option value="" disabled>
+                          Selecione um caminhão
+                        </option>
+                        {data.trucks.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name}
+                          </option>
+                        ))}
+                      </>
+                    )}
+                  </select>
+                </label>
+                {truck && (
+                  <div className="truck-spec">
+                    <div>
+                      <span>Comprimento</span>
+                      {fmt(truck.length / 100)} m
+                    </div>
+                    <div>
+                      <span>Largura</span>
+                      {fmt(truck.width / 100)} m
+                    </div>
+                    <div>
+                      <span>Altura útil</span>
+                      {fmt(truck.height / 100)} m
+                    </div>
+                    <div>
+                      <span>Capacidade</span>
+                      {fmt(truck.capacity)} kg
+                    </div>
+                  </div>
+                )}
+                <div className="divider" />
+                <div className="section-label">
+                  02 / PALETES <button onClick={() => setTab('products')}>Gerenciar</button>
+                </div>
+                {products.length ? (
+                  products.map((p) => (
+                    <div className="product-line" key={p.id}>
+                      <div className="product-title">
+                        <i className="swatch" style={{ background: p.color }} />
+                        {p.name}
+                      </div>
+                      <small>
+                        {fmt(p.length)} × {fmt(p.width)} × {fmt(p.height)} cm · {fmt(p.weight)} kg
+                        {p.fragile ? ' · Frágil' : ''}
+                      </small>
+                      <div className="quantity">
+                        <span>Quantidade</span>
+                        <div className="stepper">
+                          <button
+                            aria-label={`Diminuir ${p.name}`}
+                            disabled={!!snapshot || !lines.find((l) => l.productId === p.id)?.quantity}
+                            onClick={() =>
+                              quantity(p.id, (lines.find((l) => l.productId === p.id)?.quantity ?? 0) - 1)
+                            }
+                          >
+                            −
+                          </button>
+                          <input
+                            aria-label={`Quantidade de ${p.name}`}
+                            type="number"
+                            min="0"
+                            max="250"
+                            step="1"
+                            disabled={!!snapshot}
+                            value={lines.find((l) => l.productId === p.id)?.quantity ?? 0}
+                            onChange={(e) => quantity(p.id, Math.max(0, Number(e.target.value)))}
+                          />
+                          <button
+                            aria-label={`Aumentar ${p.name}`}
+                            disabled={!!snapshot}
+                            onClick={() =>
+                              quantity(p.id, (lines.find((l) => l.productId === p.id)?.quantity ?? 0) + 1)
+                            }
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="modal-help">Cadastre um produto para começar.</p>
+                )}
+                <label className="field gap-row">
+                  Folga mínima (cm)
+                  <Input
+                    type="number"
+                    min="0"
+                    max="50"
+                    step="0.5"
+                    value={gap}
+                    disabled={!!snapshot}
+                    onChange={(e) => {
+                      setGap(Number(e.target.value));
+                      invalidate();
+                    }}
+                  />
+                </label>
+                <DistributionControls
+                  rules={rules}
+                  lines={lines}
+                  products={products}
+                  disabled={!!snapshot}
+                  onRules={(next) => {
+                    setRules(next);
+                    invalidate();
+                  }}
+                  onLines={(next) => {
+                    setLines(next);
+                    invalidate();
+                  }}
+                />
+                <Button
+                  className="generate"
+                  disabled={!truck || !lines.length || !!snapshot}
+                  onClick={generate}
+                >
+                  <Icon name="plan" /> Gerar distribuição
+                </Button>
+                <p className="config-note">
+                  {snapshot
+                    ? 'Carga salva aberta. As medidas originais foram preservadas.'
+                    : 'Paletes no piso · sem empilhamento · até 250 unidades'}
+                </p>
+              </section>
+
+              <div className="workspace">
+                {legacy && (
+                  <div className="notice warn">
+                    <span>
+                      Plano antigo: separação de frágeis e ordem de entrega ainda não verificadas.
+                    </span>
+                    <Button variant="outline" onClick={generate}>
+                      Aplicar regras atuais
+                    </Button>
+                  </div>
+                )}
+                <div className="metrics">
+                  <div className="metric">
+                    <div className="metric-label">Paletes acomodados</div>
+                    <div className="metric-value">
+                      {plan ? plan.placed.length : '—'} <span>/ {requested}</span>
+                    </div>
+                    <div className="meter">
+                      <i style={{ width: `${requested ? (actualPlan.placed.length / requested) * 100 : 0}%` }} />
+                    </div>
+                  </div>
+                  <div className="metric">
+                    <div className="metric-label">Ocupação do piso</div>
+                    <div className="metric-value">
+                      {plan ? fmt(occupied) : '—'} <span>%</span>
+                    </div>
+                    <div className="meter">
+                      <i style={{ width: `${occupied}%` }} />
+                    </div>
+                  </div>
+                  <div className="metric">
+                    <div className="metric-label">Peso da carga</div>
+                    <div className="metric-value">
+                      {plan ? fmt(weight) : '—'} <span>kg</span>
+                    </div>
+                    <div className="meter">
+                      <i style={{ width: `${truck ? (weight / truck.capacity) * 100 : 0}%` }} />
+                    </div>
+                  </div>
+                </div>
+
+                <section className="panel">
+                  <div className="panel-head">
+                    <div>
+                      <h2>{snapshot ? snapshot.name : 'Distribuição no caminhão'}</h2>
+                      <p>
+                        {truck
+                          ? `${fmt(truck.length)} × ${fmt(truck.width)} × ${fmt(truck.height)} cm de espaço útil`
+                          : 'Selecione um caminhão para visualizar'}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {plan && plan.placed.length > 0 && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setTab('manifest')}
+                          className="text-xs h-7 gap-1"
+                        >
+                          <Icon name="manifest" /> Romaneio
+                        </Button>
+                      )}
+                      <span className="tag">{plan ? 'Vista 3D' : 'Aguardando cálculo'}</span>
+                    </div>
+                  </div>
+                  {truck ? (
+                    <Scene
+                      truck={truck}
+                      products={products}
+                      plan={actualPlan}
+                      rules={legacy ? undefined : rules}
+                      gap={gap}
+                      selected={selected}
+                      onSelect={setSelected}
+                    />
+                  ) : (
+                    <div className="empty">Cadastre ou selecione um caminhão.</div>
+                  )}
+                  {!legacy && (
+                    <div className="distribution-summary">
+                      <strong>
+                        {rules.sameDestination
+                          ? `Destino único · mais leves ${
+                              rules.lightEnd === 'cab' ? 'perto da cabine' : 'perto da porta traseira'
+                            }`
+                          : 'Vários destinos · primeira entrega perto da porta traseira'}
+                      </strong>
+                      <span>
+                        Frágeis: separação de {fmt(Math.max(gap, rules.fragileClearance))} cm e amarração
+                        obrigatória com cinta.
+                      </span>
+                    </div>
+                  )}
+                  <div className="legend">
+                    {products
+                      .filter((p) => lines.some((l) => l.productId === p.id))
+                      .map((p) => (
+                        <span key={p.id}>
+                          <i className="swatch" style={{ background: p.color }} />
+                          {p.name}
+                        </span>
+                      ))}
+                  </div>
+                </section>
+
+                {plan ? (
+                  <>
+                    <div className={`notice ${plan.unplaced.length ? 'warn' : ''}`}>
+                      <Icon name="check" />
+                      <span>
+                        {plan.unplaced.length
+                          ? `${plan.unplaced.length} palete(s) não alocado(s). Confira os motivos abaixo.`
+                          : `${plan.placed.length} paletes acomodados. Espaço, abertura e peso total verificados.`}
+                      </span>
+                    </div>
+                    <section className="panel results">
+                      <div className="result-head">
+                        <h3>{currentProduct ? currentProduct.name : 'Paletes da carga'}</h3>
+                        {current && !legacy && (
+                          <Button variant="outline" onClick={() => openModal('adjust')}>
+                            Ajustar posição
+                          </Button>
+                        )}
+                      </div>
+                      {current && currentProduct && (
+                        <p className="modal-help" style={{ marginBottom: 12 }}>
+                          Palete {plan.placed.indexOf(current) + 1} · posição {fmt(current.x)} / {fmt(current.z)} cm
+                          · {fmt(currentProduct.weight)} kg
+                          {currentProduct.fragile ? ' · Frágil · amarração obrigatória com cinta' : ''}
+                          {!rules.sameDestination
+                            ? ` · Entrega ${
+                                lines.find((l) => l.productId === current.productId)?.deliveryOrder ?? '—'
+                              } · ${lines.find((l) => l.productId === current.productId)?.destination ?? ''}`
+                            : ''}
+                        </p>
+                      )}
+                      <div className="pallet-list">
+                        {plan.placed.map((a, i) => (
+                          <button
+                            className={`pallet-chip ${selected === a.id ? 'selected' : ''}`}
+                            key={a.id}
+                            onClick={() => setSelected(a.id)}
+                          >
+                            <i
+                              className="swatch"
+                              style={{ background: products.find((p) => p.id === a.productId)?.color }}
+                            />
+                            {String(i + 1).padStart(2, '0')}
+                          </button>
+                        ))}
+                      </div>
+                      {!legacy && (
+                        <div className="delivery-table-wrap">
+                          <table className="delivery-table">
+                            <thead>
+                              <tr>
+                                <th>Produto</th>
+                                <th>Alocados</th>
+                                <th>{rules.sameDestination ? 'Peso / palete' : 'Entrega / destino'}</th>
+                                <th>Proteção</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {products
+                                .filter((p) => lines.some((l) => l.productId === p.id))
+                                .map((p) => (
+                                  <tr key={p.id}>
+                                    <td>{p.name}</td>
+                                    <td>{plan.placed.filter((a) => a.productId === p.id).length}</td>
+                                    <td>
+                                      {rules.sameDestination
+                                        ? `${fmt(p.weight)} kg`
+                                        : `${
+                                            lines.find((l) => l.productId === p.id)?.deliveryOrder ?? '—'
+                                          } · ${lines.find((l) => l.productId === p.id)?.destination ?? ''}`}
+                                    </td>
+                                    <td>{p.fragile ? 'Separação + cinta' : 'Padrão'}</td>
+                                  </tr>
+                                ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                      {plan.unplaced.map((a) => (
+                        <p className="modal-help" style={{ marginTop: 8 }} key={a.id}>
+                          {products.find((p) => p.id === a.productId)?.name}: {a.reason}
+                        </p>
+                      ))}
+                    </section>
+                  </>
+                ) : (
+                  <div className="notice info">
+                    Escolha as quantidades e clique em Gerar distribuição para visualizar em 3D.
+                  </div>
+                )}
+                <p className="limit-note">
+                  Simulação de encaixe e peso total. Monitore a balança por eixo na aba Balança & Eixos.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* ABA 2: ROMANEIO & EXPEDIÇÃO */}
+          {tab === 'manifest' && (
+            <ManifestView
+              truck={truck}
+              products={products}
+              lines={lines}
+              plan={plan}
+              rules={rules}
+              onBackToPlanner={() => setTab('planner')}
+            />
+          )}
+
+          {/* ABA 3: BALANÇA & EIXOS */}
+          {tab === 'axles' && (
+            <AxleWeightSimulator
+              truck={truck}
+              products={products}
+              plan={plan}
+            />
+          )}
+
+          {/* ABA 4: DASHBOARD / INDICADORES */}
+          {tab === 'dashboard' && (
+            <DashboardView
+              data={data}
+              onOpenLoad={openLoad}
+              onNewLoad={newLoad}
+              onNavigateTab={(target) => setTab(target as Tab)}
+            />
+          )}
+
+          {/* ABA 5 & 6: CAMINHÕES OU PRODUTOS */}
+          {(tab === 'trucks' || tab === 'products') && (
+            <div className="catalog-grid">
+              {(tab === 'trucks' ? data.trucks : data.products).map((item) => (
+                <section className="panel catalog-card" key={item.id}>
+                  <div className="card-icon">
+                    <Icon name={tab === 'trucks' ? 'truck' : 'box'} />
+                  </div>
+                  <h3>{item.name}</h3>
+                  {'capacity' in item ? (
+                    <>
+                      <p>
+                        {fmt(item.length)} × {fmt(item.width)} × {fmt(item.height)} cm
+                      </p>
+                      <p>Capacidade: {fmt(item.capacity)} kg</p>
+                      <p>
+                        Porta: {fmt(item.doorWidth)} × {fmt(item.doorHeight)} cm
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p>
+                        <i className="swatch" style={{ background: item.color }} /> {item.category}
+                        {item.fragile ? ' · Frágil' : ''}
+                      </p>
+                      <p>
+                        Palete: {fmt(item.length)} × {fmt(item.width)} cm
+                      </p>
+                      <p>
+                        Base: {fmt(item.baseHeight)} cm · Total: {fmt(item.height)} cm
+                      </p>
+                      <p>
+                        {fmt(item.weight)} kg com palete · {item.rotate ? 'Giro permitido' : 'Sem giro'}
+                      </p>
+                    </>
+                  )}
+                  <footer>
+                    <Button
+                      variant="outline"
+                      onClick={() => openModal(tab === 'trucks' ? 'truck' : 'product', item)}
+                    >
+                      Editar cadastro
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        setDeleteTarget({ kind: tab, id: item.id });
+                        openModal('delete');
+                      }}
+                    >
+                      Excluir
+                    </Button>
+                  </footer>
+                </section>
+              ))}
+              {!(tab === 'trucks' ? data.trucks : data.products).length && (
+                <div className="panel empty col-span-full">
+                  <h3>Nenhum cadastro ainda</h3>
+                  <p>Use o botão acima para adicionar o primeiro ou carregue as predefinições brasileiras.</p>
+                  <Button
+                    onClick={() => setPresetsModalOpen(true)}
+                    variant="outline"
+                    className="mt-4"
+                  >
+                    Abrir Predefinições
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ABA 7: CARGAS SALVAS */}
+          {tab === 'loads' && (
+            <div className="load-list">
+              {data.loads.map((record) => (
+                <section className="panel load-card" key={record.id}>
+                  <Icon name="truck" />
+                  <div className="load-summary">
+                    <h3>{record.name}</h3>
+                    <p>
+                      {record.truck.name} · {record.plan.placed.length} paletes ·{' '}
+                      {fmt(totalWeight(record.plan, record.products))} kg
+                    </p>
+                    <p>
+                      {new Date(record.createdAt).toLocaleString('pt-BR')} · {record.adjustments.length}{' '}
+                      ajuste(s)
+                    </p>
+                  </div>
+                  <Button variant="outline" onClick={() => openLoad(record)}>
+                    Abrir em 3D
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      setDeleteTarget({ kind: 'loads', id: record.id });
+                      openModal('delete');
+                    }}
+                  >
+                    Excluir
+                  </Button>
+                </section>
+              ))}
+              {!data.loads.length && (
+                <div className="panel empty">
+                  <h3>Seu próximo carregamento começa aqui.</h3>
+                  <p>Gere uma distribuição e salve para consultar depois.</p>
+                  <Button style={{ marginTop: 20 }} onClick={newLoad}>
+                    Planejar carga
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+        </main>
+      </div>
+
+      {/* Modal de Gestão de Caminhões, Produtos, Salvamento e Ajustes */}
+      <Dialog
+        open={modal !== null}
+        onOpenChange={(v) => {
+          if (!v && !busy) setModal(null);
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
+          <DialogTitle>
+            {modal === 'truck'
+              ? `${edit ? 'Editar' : 'Novo'} caminhão`
+              : modal === 'product'
+              ? `${edit ? 'Editar' : 'Novo'} produto e palete`
+              : modal === 'save'
+              ? 'Salvar planejamento'
+              : modal === 'adjust'
+              ? 'Ajustar posição do palete'
+              : 'Excluir registro?'}
+          </DialogTitle>
+          <DialogDescription>
+            {modal === 'truck'
+              ? 'Use as medidas internas disponíveis para a carga.'
+              : modal === 'product'
+              ? 'Informe as medidas da unidade carregada. Peso e altura total incluem o palete.'
+              : modal === 'adjust'
+              ? 'X: distância da frente. Z: distância da lateral. A posição será verificada antes de aplicar.'
+              : modal === 'save'
+              ? 'O plano será salvo junto com as medidas originais e o histórico de ajustes.'
+              : 'Cargas já salvas preservam seus dados. A exclusão deste registro é permanente.'}
+          </DialogDescription>
+          {modal === 'delete' ? (
+            <>
+              <p className="modal-error" role="alert">
+                {formError}
+              </p>
+              <div className="modal-actions">
+                <Button variant="outline" onClick={() => setModal(null)}>
+                  Cancelar
+                </Button>
+                <Button variant="destructive" disabled={busy} onClick={remove}>
+                  Excluir
+                </Button>
+              </div>
+            </>
+          ) : (
+            <form
+              className="modal-form"
+              onSubmit={submit}
+              key={`${modal}-${edit?.id ?? selected ?? 'new'}`}
+            >
+              {modal === 'truck' && (
+                <div className="form-grid">
+                  <Field wide label="Nome do caminhão" name="name" value={edit?.name} />
+                  {[
+                    ['length', 'Comprimento útil (cm)'],
+                    ['width', 'Largura útil (cm)'],
+                    ['height', 'Altura útil (cm)'],
+                    ['capacity', 'Capacidade disponível (kg)'],
+                    ['doorWidth', 'Largura da porta (cm)'],
+                    ['doorHeight', 'Altura da porta (cm)']
+                  ].map(([key, label]) => (
+                    <Field
+                      key={key}
+                      name={key}
+                      label={label}
+                      type="number"
+                      value={edit && key in edit ? Number(edit[key as keyof typeof edit]) : undefined}
+                    />
+                  ))}
+                  <p className="modal-help wide">
+                    Cadastre somente os caminhões médios da sua operação. A capacidade depende do veículo e
+                    da carroceria.
+                  </p>
+                </div>
+              )}
+              {modal === 'product' && (
+                <div className="form-grid">
+                  <Field wide label="Nome do produto" name="name" value={edit?.name} />
+                  <Field
+                    label="Tipo / categoria"
+                    name="category"
+                    value={edit && 'category' in edit ? edit.category : undefined}
+                  />
+                  <label className="field">
+                    Cor no 3D
+                    <Input
+                      type="color"
+                      name="color"
+                      defaultValue={edit && 'color' in edit ? edit.color : '#e78c45'}
+                    />
+                  </label>
+                  {[
+                    ['length', 'Comprimento do palete (cm)'],
+                    ['width', 'Largura do palete (cm)'],
+                    ['baseHeight', 'Altura da base (cm)'],
+                    ['height', 'Altura total carregada (cm)'],
+                    ['weight', 'Peso total com palete (kg)']
+                  ].map(([key, label]) => (
+                    <Field
+                      key={key}
+                      name={key}
+                      label={label}
+                      type="number"
+                      value={edit && key in edit ? Number(edit[key as keyof typeof edit]) : undefined}
+                    />
+                  ))}
+                  <label className="check wide">
+                    <input
+                      type="checkbox"
+                      name="rotate"
+                      defaultChecked={edit && 'rotate' in edit ? edit.rotate : true}
+                    />{' '}
+                    Permitir giro de 90° no piso
+                  </label>
+                  <label className="check wide">
+                    <input
+                      type="checkbox"
+                      name="fragile"
+                      defaultChecked={edit && 'fragile' in edit ? edit.fragile : false}
+                    />{' '}
+                    Produto frágil
+                  </label>
+                </div>
+              )}
+              {modal === 'save' && (
+                <Field
+                  name="name"
+                  label="Nome da carga"
+                  value={snapshot ? `${snapshot.name} · cópia` : `Carga ${data.loads.length + 1}`}
+                />
+              )}
+              {modal === 'adjust' && current && (
+                <div className="form-grid">
+                  <Field name="x" label="Posição X (cm)" type="number" min={0} value={current.x} />
+                  <Field name="z" label="Posição Z (cm)" type="number" min={0} value={current.z} />
+                  <label className="check wide">
+                    <input
+                      name="rotated"
+                      type="checkbox"
+                      defaultChecked={current.rotated}
+                      disabled={!currentProduct?.rotate}
+                    />{' '}
+                    Girar 90°
+                  </label>
+                  <Field wide name="reason" label="Motivo do ajuste" />
+                </div>
+              )}
+              {formError && (
+                <p role="alert" className="modal-error">
+                  {formError}
+                </p>
+              )}
+              {!currentUser && modal !== 'adjust' && (
+                <p className="modal-help">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setModal(null);
+                      setLoginModalOpen(true);
+                    }}
+                    className="text-orange-600 font-semibold underline"
+                  >
+                    Identifique-se como operador
+                  </button>{' '}
+                  para salvar seus registros no banco local.
+                </p>
+              )}
+              <div className="modal-actions">
+                <Button type="button" variant="outline" disabled={busy} onClick={() => setModal(null)}>
+                  Cancelar
+                </Button>
+                <Button type="submit" disabled={busy || !ready}>
+                  {busy ? 'Salvando…' : modal === 'adjust' ? 'Verificar e aplicar' : 'Salvar'}
+                </Button>
+              </div>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Login & Gestão de Perfis de Usuário */}
+      <LoginModal
+        open={loginModalOpen}
+        onOpenChange={setLoginModalOpen}
+        currentUser={currentUser}
+        onLoginSuccess={(user) => {
+          setCurrentUser(user);
+          setMessage({ text: `Autenticado como ${user.displayName} (${user.role || 'Operador'}).` });
+          void load();
+        }}
+        onLogoutSuccess={() => {
+          setCurrentUser(null);
+          setMessage({ text: 'Sessão encerrada com sucesso.' });
+          void load();
+        }}
+      />
+
+      {/* Modal de Predefinições de Veículos e Paletes Brasileiros */}
+      <PresetsModal
+        open={presetsModalOpen}
+        onOpenChange={setPresetsModalOpen}
+        onImportTrucks={handleImportTrucks}
+        onImportProducts={handleImportProducts}
+        onImportDemoScenario={handleImportDemoScenario}
+      />
+
+      {/* Modal de Backup e Restauração JSON */}
+      <BackupModal
+        open={backupModalOpen}
+        onOpenChange={setBackupModalOpen}
+        workspaceData={data}
+        onRestoreWorkspace={async (restored) => {
+          await persist(restored);
+          setData(restored);
+          if (restored.trucks[0]) setTruckId(restored.trucks[0].id);
+          setMessage({ text: 'Backup restaurado com sucesso!' });
+        }}
+      />
+    </div>
+  );
+}

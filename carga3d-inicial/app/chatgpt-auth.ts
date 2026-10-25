@@ -1,28 +1,44 @@
-import { headers } from "next/headers";
-import { redirect } from "next/navigation";
+import {
+  type ChatGPTUser,
+  COOKIE_SESSION_NAME,
+  parseCookies,
+  serializeSessionUser,
+  parseSessionUser
+} from "../lib/auth-session";
 
-export type ChatGPTUser = {
-  userId: string;
-  displayName: string;
-  email: string;
-  fullName: string | null;
-};
-
-const USER_ID_HEADER = "oai-authenticated-user-id";
-const USER_EMAIL_HEADER = "oai-authenticated-user-email";
-const USER_FULL_NAME_HEADER = "oai-authenticated-user-full-name";
-const USER_FULL_NAME_ENCODING_HEADER =
-  "oai-authenticated-user-full-name-encoding";
-const PERCENT_ENCODED_UTF8 = "percent-encoded-utf-8";
-const SIGN_IN_PATH = "/signin-with-chatgpt";
-const SIGN_OUT_PATH = "/signout-with-chatgpt";
-const CALLBACK_PATH = "/callback";
+export type { ChatGPTUser };
+export { COOKIE_SESSION_NAME, parseCookies, serializeSessionUser, parseSessionUser };
 
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
+  const { headers } = await import("next/headers");
   const requestHeaders = await headers();
+
+  // 1. Tenta autenticação por sessão local (Cookie c3d_session)
+  const cookieHeader = requestHeaders.get("cookie");
+  const cookies = parseCookies(cookieHeader);
+  const sessionValue = cookies[COOKIE_SESSION_NAME];
+
+  if (sessionValue) {
+    const localUser = parseSessionUser(sessionValue);
+    if (localUser) return localUser;
+  }
+
+  // 2. Fallback para cabeçalhos de ambiente em proxy / OpenAI
   const userId = requestHeaders.get(USER_ID_HEADER);
   const email = requestHeaders.get(USER_EMAIL_HEADER);
-  if (!userId || !email) return null;
+  if (!userId || !email) {
+    // 3. Fallback se houver cookie __sites_local_auth
+    if (cookies["__sites_local_auth"]) {
+      return {
+        userId: "local_seedy",
+        displayName: "Seedy (Local)",
+        email: "seedy@sites.test",
+        fullName: "Seedy Local",
+        role: "Administrador Local"
+      };
+    }
+    return null;
+  }
 
   const encodedFullName = requestHeaders.get(USER_FULL_NAME_HEADER);
   const fullName =
@@ -36,6 +52,7 @@ export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
     displayName: fullName ?? email,
     email,
     fullName,
+    role: "Operador de Carga"
   };
 }
 
@@ -45,6 +62,7 @@ export async function requireChatGPTUser(
   const user = await getChatGPTUser();
   if (user) return user;
 
+  const { redirect } = await import("next/navigation");
   redirect(chatGPTSignInPath(returnTo));
 }
 

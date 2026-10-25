@@ -1,63 +1,46 @@
-# Carga3D
+# Carga3D - Sistema de Gestão de Carregamento & Visualização 3D
 
-Aplicação para planejar a distribuição de paletes em caminhões de médio porte, com visualização em 3D.
+Aplicação completa para planejar a distribuição física de paletes em caminhões de médio porte, simulação de balança por eixo, romaneio oficial de expedição, indicadores de frota e visualização interativa em 3D.
 
-## O que o projeto faz
+## Novas Funcionalidades e Seções Adicionadas
 
-- Cadastra caminhões, produtos e dimensões dos paletes carregados.
-- Distribui os paletes considerando espaço, peso e folgas.
-- Separa produtos frágeis e indica a necessidade de amarração com cinta.
-- Organiza os mais leves perto da cabine quando há um único destino, ou considera a ordem de entrega quando há vários destinos.
-- Permite ajustar posições, salvar cargas e consultar os planejamentos depois.
+- **Autenticação & Controle de Acesso Local:** Sistema de login com perfis rápidos (Gestor de Frota, Operador de Carga, Conferente de Expedição) e identificação manual customizada via cookie de sessão seguro (`c3d_session`).
+- **Romaneio de Carga & Expedição:** Ordem sequencial física de carregamento (primeiro ao fundo) e descarregamento (porta traseira), impressão A4 oficial e exportação em planilha CSV.
+- **Balança & Distribuição por Eixo:** Cálculo estático em tempo real do Centro de Gravidade (CG) longitudinal e lateral, alertando sobrecargas na cabine, no truco traseiro ou desequilíbrio lateral.
+- **Painel de Indicadores (Dashboard):** KPIs logísticos de ocupação volumétrica, peso médio, histórico de cargas e catálogo ativo.
+- **Biblioteca de Predefinições Brasileiras:** Adição em 1 clique de caminhões normatizados ABNT/CONTRAN (VUC 3/4, Toco, Truck 6x2 e Carreta) e paletes padronizados PBR e Euro.
+- **Backup & Restauração JSON:** Exportação e importação de todo o banco de dados local com validação rigorosa via schemas Zod.
+- **Suíte de Testes Automatizados:** Testes unitários de motor de cálculo e testes de segurança defensiva executados via `npm test`.
 
-Tecnologias: React, TypeScript, Vinext/Vite e banco Cloudflare D1, simulado localmente no computador.
+## Como Executar no Servidor Local
 
-## Como executar em outra máquina
-
-### 1. Preparar o computador
-
-Instale o **Node.js 24**, que inclui o npm. É necessário acesso à internet para baixar as dependências na primeira instalação.
-
-Copie a pasta `carga3d-inicial` para o outro computador, incluindo os arquivos ocultos, especialmente `.openai/hosting.json`. Não é necessário copiar `node_modules`, `dist`, `.next`, `.vinext`, `.npm-cache`, `.sites-runtime`, `outputs` ou `.wrangler`.
-
-Esta versão começa sem cadastros e sem cargas de demonstração. Os dados de outras instalações não são incluídos.
-
-### 2. Instalar as dependências
-
-Abra um terminal dentro da pasta `carga3d-inicial` e execute:
-
-```sh
-npm ci --include=dev --include=optional
-```
-
-No PowerShell do Windows, se aparecer que a execução de scripts foi desabilitada, use `npm.cmd` no lugar de `npm` em todos os comandos:
+### 1. Preparar o Ambiente
+Instale o **Node.js 22 ou 24** (com npm).
 
 ```powershell
-npm.cmd ci --include=dev --include=optional
+# No PowerShell do Windows (dentro da pasta carga3d-inicial):
+npm.cmd run db:init
 npm.cmd run dev
 ```
 
-### 3. Iniciar a aplicação
+Abra **http://127.0.0.1:5173/** no seu navegador.
 
-```sh
-npm run dev
+### 2. Autenticação e Uso
+1. Clique em **Entrar no Sistema Local** no canto superior direito.
+2. Selecione um perfil rápido (ex: *Carlos Gestor*) ou digite seu nome e cargo.
+3. Clique em **Predefinições BR** para carregar veículos e paletes com 1 clique, ou clique em **Iniciar Demonstração 3D**.
+4. Navegue pelas abas:
+   - **Planejar carga:** Simulação 3D de encaixe, rotação e folgas.
+   - **Romaneio & Expedição:** Sequência de carregamento e impressão A4.
+   - **Balança & Eixos:** Distribuição nos eixos dianteiro/traseiro e lateral.
+   - **Indicadores:** KPIs consolidados de aproveitamento de carga.
+   - **Cargas salvas:** Histórico salvo no banco de dados local.
+
+### 3. Execução dos Testes Automatizados
+```powershell
+npm.cmd test
 ```
 
-O comando prepara automaticamente o banco local antes de abrir o servidor. Pode ser repetido: os cadastros existentes são preservados. Não é necessário compilar antes de usar no modo local.
-
-Abra **http://127.0.0.1:5173/** no navegador. Se o terminal mostrar outra porta, use o endereço informado nele.
-
-Clique em **Entrar para salvar**. No modo local, esse botão usa uma conta fictícia de desenvolvimento: não pede uma conta real nem uma chave de API.
-
-Mantenha o terminal aberto enquanto usa a aplicação. Para encerrar, pressione **Ctrl + C**. Nas próximas vezes, basta executar `npm run dev` novamente.
-
-## Como usar
-
-1. Cadastre o caminhão com suas medidas internas e capacidade disponível.
-2. Cadastre os produtos e seus paletes. O peso e a altura total devem incluir o palete.
-3. Escolha as quantidades, a separação dos frágeis e se todos vão ao mesmo destino.
-4. Para destinos diferentes, informe a parada e a ordem de entrega de cada produto.
-5. Clique em **Gerar distribuição**, confira o 3D e salve a carga.
 
 Os dados ficam em `.wrangler/state` na própria máquina. Fechar o navegador não apaga os registros; excluir essa pasta apaga o banco local. Computadores diferentes não compartilham os dados automaticamente.
 

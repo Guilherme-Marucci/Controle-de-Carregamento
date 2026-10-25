@@ -101,3 +101,283 @@ export function planCargo(truck: Truck, products: Product[], lines: Line[], gap:
 }
 export function area(plan: Plan, products: Product[]) { return plan.placed.reduce((s, a) => { const p = products.find(p => p.id === a.productId)!; return s + p.length * p.width; }, 0); }
 export function totalWeight(plan: Plan, products: Product[]) { return plan.placed.reduce((s, a) => s + (products.find(p => p.id === a.productId)?.weight ?? 0), 0); }
+
+export type AxleDistribution = {
+  totalWeight: number;
+  centerOfGravityX: number; // Distância média da cabine em cm
+  centerOfGravityZ: number; // Distância média da lateral esquerda em cm
+  cgPercentX: number; // % do comprimento do baú (0% = colado na cabine, 100% = na porta)
+  frontAxleWeight: number; // Estimativa de peso transferido ao eixo dianteiro (kg)
+  rearAxleWeight: number; // Estimativa de peso transferido ao eixo traseiro (kg)
+  frontAxlePercent: number; // % do peso no eixo dianteiro
+  rearAxlePercent: number; // % do peso no eixo traseiro
+  leftWeight: number; // Peso no lado esquerdo do baú (kg)
+  rightWeight: number; // Peso no lado direito do baú (kg)
+  lateralBalancePercent: number; // Variação lateral (-100% todo na esquerda, +100% todo na direita)
+  lateralStatus: 'equilibrado' | 'atencao' | 'desbalanceado';
+  longitudinalStatus: 'equilibrado' | 'sobrecarga_cabine' | 'sobrecarga_traseira';
+};
+
+/**
+ * Calcula o Centro de Gravidade (CG) longitudinal e transversal da carga
+ * e estima a distribuição de peso entre eixo dianteiro e eixo traseiro.
+ */
+export function calculateAxleDistribution(truck: Truck, products: Product[], plan: Plan): AxleDistribution {
+  const weight = totalWeight(plan, products);
+  if (weight <= 0 || !plan.placed.length || truck.length <= 0 || truck.width <= 0) {
+    return {
+      totalWeight: 0,
+      centerOfGravityX: 0,
+      centerOfGravityZ: 0,
+      cgPercentX: 0,
+      frontAxleWeight: 0,
+      rearAxleWeight: 0,
+      frontAxlePercent: 50,
+      rearAxlePercent: 50,
+      leftWeight: 0,
+      rightWeight: 0,
+      lateralBalancePercent: 0,
+      lateralStatus: 'equilibrado',
+      longitudinalStatus: 'equilibrado'
+    };
+  }
+
+  let momentX = 0;
+  let momentZ = 0;
+  let leftWeight = 0;
+  let rightWeight = 0;
+  const midZ = truck.width / 2;
+
+  for (const item of plan.placed) {
+    const product = products.find(p => p.id === item.productId);
+    if (!product) continue;
+    const f = footprint(product, item.rotated);
+    const itemCenterX = item.x + f.l / 2;
+    const itemCenterZ = item.z + f.w / 2;
+    const itemWeight = product.weight;
+
+    momentX += itemWeight * itemCenterX;
+    momentZ += itemWeight * itemCenterZ;
+
+    if (itemCenterZ < midZ) {
+      leftWeight += itemWeight;
+    } else {
+      rightWeight += itemWeight;
+    }
+  }
+
+  const cgX = momentX / weight;
+  const cgZ = momentZ / weight;
+  const cgPercentX = (cgX / truck.length) * 100;
+
+  // Em caminhões médios (toco / 3/4), o centro geométrico do entre-eixos normalmente
+  // fica localizado entre 40% e 55% do comprimento do baú.
+  // Modelagem por alavanca estática simples:
+  const rearAxlePercent = Math.min(100, Math.max(0, (cgX / truck.length) * 100));
+  const frontAxlePercent = 100 - rearAxlePercent;
+  const frontAxleWeight = (weight * frontAxlePercent) / 100;
+  const rearAxleWeight = (weight * rearAxlePercent) / 100;
+
+  // Análise lateral
+  const lateralDiff = Math.abs(leftWeight - rightWeight);
+  const lateralRatio = weight > 0 ? (lateralDiff / weight) * 100 : 0;
+  const lateralBalancePercent = weight > 0 ? ((rightWeight - leftWeight) / weight) * 100 : 0;
+
+  let lateralStatus: AxleDistribution['lateralStatus'] = 'equilibrado';
+  if (lateralRatio > 25) lateralStatus = 'desbalanceado';
+  else if (lateralRatio > 12) lateralStatus = 'atencao';
+
+  let longitudinalStatus: AxleDistribution['longitudinalStatus'] = 'equilibrado';
+  if (cgPercentX < 28) longitudinalStatus = 'sobrecarga_cabine';
+  else if (cgPercentX > 72) longitudinalStatus = 'sobrecarga_traseira';
+
+  return {
+    totalWeight: weight,
+    centerOfGravityX: cgX,
+    centerOfGravityZ: cgZ,
+    cgPercentX,
+    frontAxleWeight,
+    rearAxleWeight,
+    frontAxlePercent,
+    rearAxlePercent,
+    leftWeight,
+    rightWeight,
+    lateralBalancePercent,
+    lateralStatus,
+    longitudinalStatus
+  };
+}
+
+export type ManifestStep = {
+  palletId: string;
+  loadOrder: number; // 1 = primeiro a entrar no caminhão
+  unloadOrder: number; // 1 = primeiro a sair na entrega
+  product: Product;
+  positionX: number;
+  positionZ: number;
+  rotated: boolean;
+  destination: string;
+  deliveryOrder: number;
+  fragile: boolean;
+  requiresStrap: boolean;
+  cumulativeWeight: number;
+};
+
+/**
+ * Gera a ordem física de carregamento (LIFO / FIFO) e o romaneio completo de expedição.
+ */
+export function generateManifest(
+  truck: Truck,
+  products: Product[],
+  lines: Line[],
+  plan: Plan,
+  rules: DistributionRules = DEFAULT_RULES
+): ManifestStep[] {
+  if (!plan.placed.length) return [];
+
+  // Ordena para carregamento: paletes mais próximos da cabine (menor X) entram primeiro.
+  // Em caso de empate de X, quem está na lateral esquerda entra primeiro.
+  const sorted = [...plan.placed].sort((a, b) => a.x - b.x || a.z - b.z);
+
+  let cumulativeWeight = 0;
+  const steps: ManifestStep[] = sorted.map((placement, index) => {
+    const product = products.find(p => p.id === placement.productId)!;
+    const line = lines.find(l => l.productId === placement.productId);
+    cumulativeWeight += product.weight;
+
+    return {
+      palletId: placement.id,
+      loadOrder: index + 1,
+      unloadOrder: sorted.length - index,
+      product,
+      positionX: placement.x,
+      positionZ: placement.z,
+      rotated: placement.rotated,
+      destination: line?.destination || (rules.sameDestination ? 'Destino Principal' : 'Geral'),
+      deliveryOrder: line?.deliveryOrder || 1,
+      fragile: product.fragile,
+      requiresStrap: product.fragile,
+      cumulativeWeight
+    };
+  });
+
+  return steps;
+}
+
+/**
+ * Predefinições de Veículos Padrão de Carga Rodoviária no Brasil (ABNT / CONTRAN)
+ */
+export const PRESET_TRUCKS: Truck[] = [
+  {
+    id: 'preset-truck-vuc',
+    name: 'Caminhão 3/4 (VUC Baú Urbano)',
+    length: 450,
+    width: 220,
+    height: 220,
+    doorWidth: 210,
+    doorHeight: 210,
+    capacity: 3500
+  },
+  {
+    id: 'preset-truck-toco',
+    name: 'Caminhão Toco (Médio Semipesado)',
+    length: 650,
+    width: 245,
+    height: 250,
+    doorWidth: 240,
+    doorHeight: 240,
+    capacity: 6500
+  },
+  {
+    id: 'preset-truck-truck-6x2',
+    name: 'Caminhão Truck (6x2 Baú Grande)',
+    length: 850,
+    width: 250,
+    height: 260,
+    doorWidth: 245,
+    doorHeight: 250,
+    capacity: 14000
+  },
+  {
+    id: 'preset-truck-carreta',
+    name: 'Carreta Baú Rodoviária (Semirreboque)',
+    length: 1460,
+    width: 250,
+    height: 270,
+    doorWidth: 245,
+    doorHeight: 260,
+    capacity: 25000
+  }
+];
+
+/**
+ * Predefinições de Paletes Padronizados (PBR ABRAS e Euro)
+ */
+export const PRESET_PRODUCTS: Product[] = [
+  {
+    id: 'preset-prod-pbr-industrial',
+    name: 'Palete PBR Carga Seca / Industrial',
+    category: 'Manufaturados',
+    color: '#2563eb',
+    length: 120,
+    width: 100,
+    baseHeight: 15,
+    height: 145,
+    weight: 680,
+    rotate: true,
+    fragile: false
+  },
+  {
+    id: 'preset-prod-pbr-bebidas',
+    name: 'Palete PBR Bebidas / Alimentos Pesados',
+    category: 'Alimentos e Bebidas',
+    color: '#0891b2',
+    length: 120,
+    width: 100,
+    baseHeight: 15,
+    height: 150,
+    weight: 950,
+    rotate: true,
+    fragile: false
+  },
+  {
+    id: 'preset-prod-euro-farma',
+    name: 'Palete Euro (EPAL) Farmacêutico',
+    category: 'Saúde e Higiene',
+    color: '#059669',
+    length: 120,
+    width: 80,
+    baseHeight: 14,
+    height: 130,
+    weight: 420,
+    rotate: true,
+    fragile: false
+  },
+  {
+    id: 'preset-prod-fragil-vidros',
+    name: 'Palete Carga Frágil (Vidros / Cerâmica)',
+    category: 'Frágil / Delicado',
+    color: '#dc2626',
+    length: 120,
+    width: 100,
+    baseHeight: 15,
+    height: 120,
+    weight: 380,
+    rotate: false,
+    fragile: true
+  },
+  {
+    id: 'preset-prod-eletro',
+    name: 'Palete Eletrodomésticos / Eletrônicos',
+    category: 'Linha Branca / Tech',
+    color: '#7c3aed',
+    length: 120,
+    width: 100,
+    baseHeight: 15,
+    height: 175,
+    weight: 320,
+    rotate: true,
+    fragile: true
+  }
+];
+
