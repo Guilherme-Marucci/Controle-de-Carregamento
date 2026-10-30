@@ -68,7 +68,7 @@ flowchart TB
     subgraph Client["Camada Cliente (Browser / Coletor)"]
         WebUI["Interface Web + AccessBoundary.tsx"]
         Scene3D["Renderizador 3D (app/scene.tsx)"]
-        HID["Scanner Físico HID (Δt < 50ms)"]
+        HID["Scanner Físico HID (&Delta;t &lt; 50ms)"]
     end
 
     subgraph EdgeAuthz["Camada de Segurança Defensiva no Edge"]
@@ -91,17 +91,17 @@ flowchart TB
         EventLog[("movimentacoes (Event Sourcing + View PowerBI)")]
     end
 
-    WebUI -->|Cookie c3d_sid + Origin| MW
+    WebUI -->|"Cookie c3d_sid + Origin"| MW
     MW --> Registry
     MW --> OriginCheck
     MW --> CookieCheck
-    CookieCheck <-->|Validação Síncrona authz_version| D1Users
-    MW <-->|RBAC + PBAC Default Deny| D1ACL
-    MW -.->|Mutação Governança db.batch| D1Audit
-    HID -->|POST /api/scans (M2M_BYPASS)| ScansAPI
-    ScansAPI -->|202 Accepted < 30ms| Queue
+    CookieCheck <-->|"Validação Síncrona authz_version"| D1Users
+    MW <-->|"RBAC + PBAC Default Deny"| D1ACL
+    MW -.->|"Mutação Governança db.batch"| D1Audit
+    HID -->|"POST /api/scans (M2M_BYPASS)"| ScansAPI
+    ScansAPI -->|"202 Accepted &lt; 30ms"| Queue
     Queue --> Consumer --> EventLog
-    EventLog -->|usePalletPositions| Scene3D
+    EventLog -->|"usePalletPositions"| Scene3D
 ```
 
 ### 3.1. Motor de Cubagem 3D, Centro de Gravidade e Romaneio
