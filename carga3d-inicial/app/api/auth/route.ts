@@ -2,6 +2,7 @@ import { getChatGPTUser } from '../../chatgpt-auth';
 import {
   COOKIE_SESSION_NAME,
   PRESET_USERS,
+  serializeSessionUser,
   type ChatGPTUser
 } from '@/lib/auth-session';
 
@@ -78,9 +79,8 @@ export async function POST(request: Request) {
       };
     }
 
-    // Serializa o usuário em JSON codificado em base64 com prefixo seguro
-    const sessionPayload = Buffer.from(JSON.stringify(targetUser)).toString('base64');
-    const cookieValue = `b64_${sessionPayload}`;
+    // Serializa o usuário em JSON codificado em base64 via Web APIs nativas
+    const cookieValue = serializeSessionUser(targetUser);
 
     const response = Response.json({
       ok: true,

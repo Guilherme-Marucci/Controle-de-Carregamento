@@ -13,7 +13,8 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "test": "node --experimental-strip-types --test tests/**/*.test.ts",
     "db:generate": "drizzle-kit generate",
-    "db:init": "node scripts/init-local-db.mjs"
+    "db:init": "node scripts/init-local-db.mjs",
+    "db:bootstrap-superadmin": "node --experimental-strip-types scripts/bootstrap-superadmin.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
